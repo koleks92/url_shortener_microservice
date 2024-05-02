@@ -4,37 +4,89 @@ const cors = require('cors');
 const app = express();
 const bodyParser = require("body-parser");
 const dns = require('dns');
-const { URL } = require('url');
+const mongoose = require('mongoose');
+
+// Connect to mongoose
+mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true });
 
 
-let data = []
+// Create a schema
+const urlSchema = new mongoose.Schema({
+  original_url: {
+    type: String,
+    required: true
+  },
+  short_url: {
+    type: Number,
+    required: true
+  }}, { timestamps: true })
+
+
+// Create a model
+let URL = mongoose.model('URL', urlSchema);
+
+
 
 // Create and save URL
-const createAndSaveURL = (newUrl, newShort) => {
-  const url = { original_url: newUrl, short_url: newShort};
-  data.push(url);
+const createAndSaveURL = (url, shorturl, done) => {
+  let newURL = new URL({original_url: url, short_url: shorturl})
+
+   newURL.save(function(err, data) {
+    if (err) return console.error(err);
+    done(null, data)
+  })
+
+  return true;
 }
 
 // Find URL by full address
-const findUrl = (url) => {
-  return data.find(obj => obj.original_url === url);
-}
+const findURLByName = function(url, done ){
+  URL.findOne({original_url: url}, function(err, data) {
+    if (err) return console.error(err);
+    done(null, data);
+  })
+};
 
 // Find URL by short address
-const findShort = (shortUrl) => {
-  return data.find(obj => obj.short_url === parseInt(shortUrl));
+const findShort = function(shorturl, done) {
+  URL.findOne({short_url: shorturl}, function(err, data) {
+    if (err) return console.error(err);
+    done(null, data);
+  })
 }
 
+// Find last added short
+const findLastShort = function(done) {
+  URL.findOne().sort({ createdAt: -1 }).exec((err, data) => {
+    if (err) console.error('Error:', err);
+    done(null, data)
+  })
+}
 
 
 
 // Generate new short_url
-const generateShortUrlAndSave = (url) => {
+const generateShortUrlAndSave = function(url, res) {
   // Generate new number
-  let shortUrl = data.length + 1;
+  let newShortUrl;
 
-  // Add to database
-  createAndSaveURL(url, shortUrl);
+  findLastShort((err, data) => {
+    if (err) console.error("Error: ", err);
+    if (!data || data.length === 0) {
+      newShortUrl = 1;
+    } else {
+      // If existed, add one to short url number !
+      newShortUrl = data.short_url + 1;
+    }
+
+    // Create and save new URL
+    createAndSaveURL(url, newShortUrl, (err, data) => {
+      if (err) console.error("Error: ", err);
+      res.json({ original_url: data.original_url, short_url: data.short_url })
+    })
+  })
+
+
 }
 
 // Basic Configuration
@@ -60,51 +112,45 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.post('/api/shorturl', function(req, res) {
   let url = req.body.url;
 
-  // Check if url was provided
-  if (!url || url === '') {
-    res.json({error: 'invalid url'});
-  }
+  const regex = /^(https?:\/\/)(www.)?\w+\.\w+/i;
 
-  // Check if valid URL object
-  let urlObj;
-  try {
-    urlObj = new URL(url).hostname;
-  } catch (err) {
+  const check = regex.test(url);
+
+  if (!check) {
     res.json({error: 'invalid url'})
+  } else {
+    findURLByName(url, (err, data) => {
+      if (err) console.error("Error", err);
+      if (!data || data.length === 0) {
+        // If not found in database, create new and return json
+        generateShortUrlAndSave(url, res);
+      } else {
+        // If found in database, return json with data
+        res.json({ original_url: data.original_url, short_url: parseInt(data.short_url)})
+      }
+    });
+
   } 
 
-  // CHeck if URL object exists
-  dns.lookup(urlObj, (err, address, family) => {
-    if (err) res.json({error: 'invalid url'})
 
-    // Check if url in database
-    let urlCheck = findUrl(url);
-    if (!urlCheck) {
-      // Create and save new URL
-      generateShortUrlAndSave(url);
-      // Find in database
-      urlCheck = findUrl(url);
-      res.json(urlCheck);
-    } else {
-      res.json(urlCheck);
-    }
-  })
 });
 
 // Get
 app.get('/api/shorturl/:shorturl?', function(req, res) {
   const shortUrl = req.params.shorturl;
 
-  // Find in database
-  const shortCheck = findShort(shortUrl);
 
-  // Redirect to address
-  if (!shortCheck) {
-    res.redirect('/');
-  } else {
-    res.redirect(shortCheck.original_url);
-  }
-});
+  findShort(shortUrl, (err, data) => {
+    if (err) console.error("Error :", err);
+
+    if (!data || data.length === 0) {
+      res.redirect('/');
+    } else {
+      const url = data.original_url;
+      res.redirect(url);
+    }
+  })
+})
 
 app.listen(port, function() {
   console.log(`Listening on port ${port}`);
